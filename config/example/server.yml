@@ -1,0 +1,13 @@
+server:
+  rest:
+    name: api
+    host:
+    port: 4011
+    tls: false
+    timeout: 27
+    secretKey: mysecret
+    applicationCode: 10
+    env: local
+groq:
+  apiKey: REDACTED_GROQ_API_KEY
+  model: openai/gpt-oss-120b
