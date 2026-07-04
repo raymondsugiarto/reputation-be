@@ -4,7 +4,7 @@ database:
     port: 5432
     username: postgres
     password: postgres
-    dbname: funder
+    dbname: reputation
     adapter: postgres
     logLevel: 3
     slowThreshold: 1 # in second
