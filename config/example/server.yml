@@ -9,5 +9,7 @@ server:
     applicationCode: 10
     env: local
 groq:
-  apiKey: REDACTED_GROQ_API_KEY
+  # SECURITY: never commit real API keys. Example values only. Production
+  # secrets live in your secret manager (1Password / Vault / .env.local).
+  apiKey: ${GROQ_API_KEY}
   model: openai/gpt-oss-120b

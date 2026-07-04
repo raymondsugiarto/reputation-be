@@ -1,0 +1,18 @@
+# .gitattributes — language hints + secret-leak safety nets
+#
+# 1) Mark all committed YAML as text so future `git filter-repo` runs can
+#    rewrite it deterministically.
+# 2) Force a `secret-scan` filter on committed config files so any future
+#    leak is automatically scrubbed at push/pack time. This pairs with
+#    any external scanner (gitleaks, trufflehog) you'd wire into CI.
+
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
+# Config files are high-signal for leaks — even after scrubbing, keep
+# them as plain text (no line-ending surprises across platforms).
+config/** text eol=lf
+
+# A no-op filter that can be enabled by a future scanner hook.
+# Format: `filter=<name>` — defined externally.
+# *.secret.yml  filter=secret-scan
