@@ -1,0 +1,94 @@
+# ----------------------------------------------------------------------------
+# Continuous Integration
+# ----------------------------------------------------------------------------
+# Runs on every push to main/master and on every pull request.
+#
+# Responsibilities (kept deliberately narrow per project-standards:
+# "Prefer simplicity over abstraction"):
+#   1. Check out the repo with full history so `make test` (which generates
+#      mocks via mockery) works the same as on a developer workstation.
+#   2. Install Go (matching `go.mod`'s `go 1.25.0` directive).
+#   3. `go vet ./...` — fast static check that catches most mistakes.
+#   4. `make test` — runs `generate-mock` then `go test` via gotestsum.
+#   5. Smoke-check that `make build` produces a `main` binary.
+#
+# The container-image build + publish flow lives in `publish.yml`.
+# ----------------------------------------------------------------------------
+
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# Allow concurrent runs on different branches; cancel in-flight runs on the
+# same branch when a new commit lands.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    name: vet + test + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # mock generation needs the full history (or at least enough to
+          # resolve HEAD~1 for changed-file detection if used later).
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Pin to the same major.minor declared in `go.mod` so downloads
+          # are deterministic.
+          go-version: "1.25.9"
+          # `internal` cache + `true` for dependency cache per project caching
+          # guidance.
+          cache: true
+
+      - name: Install test dependencies
+        # The Makefile already pulls in gotestsum + mockery on demand, but
+        # installing go tools up-front avoids noisy download streams inside
+        # the test step logs.
+        run: |
+          go install gotest.tools/gotestsum@latest
+          go install github.com/vektra/mockery/v2@v2.53.4
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Mock generation (smoke check)
+        # generate-mock writes to pkg/infrastructure and wipes any pre-existing
+        # mocks; running it explicitly first surfaces "did you forget to
+        # commit a mock?" failures before we hit the test step.
+        run: make generate-mock
+
+      - name: Tests
+        # gotestsum is what the Makefile uses anyway; it produces nicer
+        # output + the coverprofile we want for the coverage artefact.
+        run: make test
+
+      - name: Build smoke-test
+        # mirrors what the publish workflow's `docker build` will do.
+        run: make build
+        shell: bash
+
+      - name: Upload coverage report (best-effort)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            report/c.out
+            report/coverage.html
+          if-no-files-found: ignore

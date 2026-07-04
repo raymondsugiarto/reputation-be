@@ -1,0 +1,45 @@
+# Build artefacts + VCS metadata — all re-generated inside the image.
+.git
+.gitignore
+.github
+.gitattributes
+.gitlab
+.svn
+.hg
+.DS_Store
+
+# Go build cache + binary
+/main
+/bin
+*.exe
+*.dll
+*.so
+*.dylib
+*.out
+*.test
+vendor/
+
+# Test/coverage reports
+coverage.out
+coverage.html
+report/
+*.cover
+*.coverprofile
+.profile
+
+# Local config overlays — config/example/ is enough at build time; real
+# secrets live in config/resources/ which is .gitignored anyway.
+config/resources/
+
+# Env files, IDE scratch, OS metadata
+.env
+.env.*
+.vscode
+.idea
+*.swp
+*.swo
+Thumbs.db
+
+# Local-only scratch dirs
+tmp/
+graphify-out/

@@ -1,47 +1,79 @@
-ARG alpine_version=3.23
-ARG go_version=1.25.9
-ARG DATABASE_MAIN_HOST
-ARG DATABASE_MAIN_PORT
-ARG DATABASE_MAIN_USERNAME
-ARG DATABASE_MAIN_PASSWORD
+# syntax=docker/dockerfile:1.7
+# ----------------------------------------------------------------------------
+# reputation-be container image
+# ----------------------------------------------------------------------------
+#   builder  -> pinned golang alpine, runs `make build` (which `setup`s config
+#               and compiles the cobra CLI as `main`)
+#   runtime  -> minimal alpine, non-root user, only the binary + config +
+#               db migrations shipped in.
+#   entrypoint: `./main start` (cobra subcommand) listening on :4011
+# ----------------------------------------------------------------------------
 
+ARG ALPINE_VERSION=3.23
+ARG GO_VERSION=1.25.9
 
-## Builder
-FROM golang:$go_version-alpine$alpine_version AS builder
+# ---- builder ----
+FROM golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS builder
 
-RUN apk update && \
-    apk add make && \
-    apk add ca-certificates gcc g++ libc-dev
+# Build-time tools: ca-certificates for outbound TLS, gcc/musl for any cgo,
+# make for the `make build` target.
+RUN apk add --no-cache make ca-certificates gcc g++ libc-dev git
 
 WORKDIR /app
 
-COPY . .
-
+# Cache go.mod/go.sum first so dependency resolution doesn't bust the layer
+# on every source change.
+COPY go.mod go.sum ./
 RUN go mod download
 
+# Then the rest of the source.
+COPY . .
+
+# `make build` runs `setup` (copies config/example -> config/resources) and
+# then `go build -o ./main main.go`. Reproducible by virtue of go build's
+# default ldflags behaviour.
 RUN make build
 
+# ---- runtime ----
+# Pin to the same alpine major/minor so `golang:` and `alpine:` stay in sync.
+FROM alpine:${ALPINE_VERSION}
 
-## Distribution
-FROM alpine:latest
-RUN apk add --no-cache bash
+# Only what's needed at runtime: tzdata + ca-certificates (for outbound TLS
+# to Groq / MiniMax / etc.). bash stays in for `start.sh`-like ops.
+RUN apk add --no-cache ca-certificates bash tzdata
 
 WORKDIR /app
 
-RUN mkdir /app/config \
-	&& mkdir /app/logs 
+# Non-root user (matches the FE runner pattern). uid 1001 / gid 1001.
+RUN addgroup -S -g 1001 app \
+ && adduser  -S -u 1001 -G app -h /app app
 
-COPY --from=builder /app/main /app/
-COPY --from=builder /app/config /app/config
-COPY --from=builder /app/db /app/db
+# Layout matches what `make build` produced.
+RUN mkdir -p /app/config /app/db /app/logs \
+ && chown -R app:app /app
 
-RUN chmod +x main \
-    && chmod -R 770 /app/logs
+COPY --from=builder --chown=app:app /app/main         /app/main
+COPY --from=builder --chown=app:app /app/config        /app/config
+COPY --from=builder --chown=app:app /app/db            /app/db
+COPY --from=builder --chown=app:app /app/Makefile      /app/Makefile
 
-RUN ls -l
-RUN ls -la /app/config
-RUN ls -la /app/config/resources
-RUN pwd
+USER app
 
-# CMD /bin/bash -c ./start.sh
-CMD ["./main", "start"]
+EXPOSE 4011
+
+ENV PATH=/app:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
+    GIN_MODE=release \
+    TZ=UTC
+
+# The CLI binary accepts subcommands: `start` boots the REST server on :4011.
+ENTRYPOINT ["./main"]
+CMD ["start"]
+
+
+# ----------------------------------------------------------------------------
+# OCI image metadata
+# ----------------------------------------------------------------------------
+LABEL org.opencontainers.image.title="reputation-be" \
+      org.opencontainers.image.description="CekReputasi — Go/Fiber REST API + admin/customer/auth modules" \
+      org.opencontainers.image.source="https://github.com/raymondsugiarto/reputation-be" \
+      org.opencontainers.image.licenses="Proprietary"
