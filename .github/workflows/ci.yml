@@ -83,7 +83,16 @@ jobs:
           # mockery ships release tarballs named `_Linux_x86_64.tar.gz` /
           # `_Linux_arm64.tar.gz` (note: not `amd64`). Translate `uname -m`
           # output to the matching asset suffix.
-          MOCKERY_VERSION="${MOCKERY_VERSION:-v2.53.4}"
+          #
+          # v2.53.4 is built with Go 1.24 and types-checks project packages
+          # against its embedded Go 1.24 type-checker; when our `go.mod`
+          # declares `go 1.25.0`, every loaded package spams an annotation
+          # saying "package requires newer Go version go1.25 (application
+          # built with go1.24)". v2.53.6 (Feb 2026) ships the Go 1.26
+          # runtime, which satisfies our `toolchain go1.25.12` and silences
+          # the annotation. v3.x removed `--all` in favour of a config file,
+          # so we stay on the v2 line until we add `.mockery.yml`.
+          MOCKERY_VERSION="${MOCKERY_VERSION:-v2.53.6}"
           case "$(uname -m)" in
             x86_64)  MOCKERY_ARCH=x86_64 ;;
             aarch64) MOCKERY_ARCH=arm64 ;;

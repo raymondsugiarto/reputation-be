@@ -25,7 +25,11 @@ generate-mock: clean-mock
 test: setup generate-mock
 	@echo "--- Running test ---"
 	@mkdir -p report
-	@go run gotest.tools/gotestsum@latest -f testname -- ./pkg/module/... --coverprofile="report/c.out" -shuffle=on
+	# Pin gotestsum — `@latest` will silently bump the go directive
+	# requirement past what our Go toolchain supports (see go.mod's `toolchain`
+	# line). v1.13.0 is the latest release that compiles cleanly under
+	# Go 1.25.x as of writing.
+	@go run gotest.tools/gotestsum@v1.13.0 -f testname -- ./pkg/module/... --coverprofile="report/c.out" -shuffle=on
 
 test-coverage: test
 	@echo "--- Running test coverage ---"
