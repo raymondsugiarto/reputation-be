@@ -206,33 +206,75 @@ jobs:
       - name: Authenticate Portainer
         id: auth
         run: |
-          TOKEN=$(
-            curl -sk \
+          # Build the login payload as a real JSON object via jq so we never
+          # have to hand-quote JSON through bash. The previous version
+          # inlined the body in a single-quoted bash string and *that* is
+          # fine, but we keep it symmetric with Redeploy for readability.
+          jq -n \
+            --arg u "${{ secrets.PORTAINER_USERNAME }}" \
+            --arg p "${{ secrets.PORTAINER_PASSWORD }}" \
+            '{username: $u, password: $p}' > /tmp/portainer-auth.json
+          TOKEN=$(curl -sk \
             -X POST \
-            "${{ secrets.PORTAINER_URL }}/api/auth" \
             -H "Content-Type: application/json" \
-            -d '{
-              "username":"${{ secrets.PORTAINER_USERNAME }}",
-              "password":"${{ secrets.PORTAINER_PASSWORD }}"
-            }' | jq -r '.jwt'
-          )
+            --data-binary @/tmp/portainer-auth.json \
+            "${{ secrets.PORTAINER_URL }}/api/auth" | jq -r '.jwt')
+          rm -f /tmp/portainer-auth.json
+          # Fail loudly if we got an empty token (Portainer usually returns
+          # 4xx with a JSON error body; jq -r '.jwt' then returns "null").
+          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::failed to obtain Portainer JWT (empty response)"
+            exit 1
+          fi
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
       - name: Read compose
         id: compose
         run: |
+          # JSON-encode docker-compose.yml so subsequent steps can drop it
+          # verbatim into a JSON request body. Stored as a $GITHUB_OUTPUT
+          # *value* (not a path) so the Redeploy step can jq-slurp it
+          # without a second file read.
           CONTENT=$(jq -Rs . docker-compose.yml)
           echo "compose=$CONTENT" >> "$GITHUB_OUTPUT"
       - name: Redeploy
         run: |
-          curl -sk \
-            -X PUT \
-            "${{ secrets.PORTAINER_URL }}/api/stacks/${{ secrets.PORTAINER_STACK_ID }}?endpointId=${{ secrets.PORTAINER_ENDPOINT_ID }}" \
+          # Build the redeploy payload as a real JSON file via jq — never
+          # embed JSON inside a bash double-quoted string. The previous
+          # version did exactly that and the embedded `\"` escapes from
+          # the YAML block scalar made curl see stray tokens like `-:`,
+          # producing `curl: option -: is unknown`. Stdin via
+          # `--data-binary @-` keeps the body byte-for-byte intact.
+          #
+          # inputs.ref defaults to the compose value written by the
+          # `Read compose` step; --arg keeps it on the jq side rather than
+          # splicing raw text into a JSON literal.
+          jq -n \
+            --arg compose    "${{ steps.compose.outputs.compose }}" \
+            --argjson prune   false \
+            --argjson pull    true \
+            --argjson repull  true \
+            --argjson env     [] \
+            '{
+              StackFileContent:        ($compose | fromjson),
+              Env:                     $env,
+              Prune:                   $prune,
+              PullImage:               $pull,
+              RepullImageAndRedeploy:   $repull
+            }' > /tmp/portainer-redeploy.json
+
+          # Sanity check before hitting the API: body must be a non-empty
+          # JSON object. If `fromjson` fails (because Read compose wrote
+          # something malformed), jq will already have exited non-zero.
+          test -s /tmp/portainer-redeploy.json
+
+          # `set -x` would leak the JWT and the entire stack body into the
+          # log; deliberately keep this step quiet.
+          curl -fsS -X PUT \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"StackFileContent\": ${{ steps.compose.outputs.compose }},
-              \"Env\": [],
-              \"Prune\": false,
-              \"PullImage\": true,
-              \"RepullImageAndRedeploy\": true
-            }"
+            --data-binary @/tmp/portainer-redeploy.json \
+            "${{ secrets.PORTAINER_URL }}/api/stacks/${{ secrets.PORTAINER_STACK_ID }}?endpointId=${{ secrets.PORTAINER_ENDPOINT_ID }}"
+          # curl already exited non-zero on HTTP >=400, but Portainer can
+          # return 200 with an error envelope. We don't parse it here
+          # (kept simple); the next deploy will surface any drift.
+          rm -f /tmp/portainer-redeploy.json
