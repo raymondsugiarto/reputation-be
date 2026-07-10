@@ -57,12 +57,34 @@ jobs:
           cache: true
 
       - name: Install test dependencies
-        # The Makefile already pulls in gotestsum + mockery on demand, but
-        # installing go tools up-front avoids noisy download streams inside
-        # the test step logs.
+        # The Makefile already pulls in gotestsum on demand, but installing
+        # both tools up-front avoids noisy download streams inside the test
+        # step logs.
+        #
+        # gotestsum is still installed via `go install` (it's a real Go
+        # module). mockery is installed from the official GitHub release
+        # tarball because `go install github.com/vektra/mockery/v2@<v>`
+        # transitively asks proxy.golang.org for `github.com/stretchr/testify/mock`
+        # — a sub-package that is **not** published as a standalone module, so
+        # the proxy returns 404 (`no metadata for github.com/stretchr/testify/mock`)
+        # and CI fails before any of our code is even compiled. The release
+        # tarball ships a pre-built binary that has no such dependency.
+        # See release listing: https://github.com/vektra/mockery/releases
         run: |
           go install gotest.tools/gotestsum@latest
-          go install github.com/vektra/mockery/v2@v2.53.4
+          # mockery ships release tarballs named `_Linux_x86_64.tar.gz` /
+          # `_Linux_arm64.tar.gz` (note: not `amd64`). Translate `uname -m`
+          # output to the matching asset suffix.
+          MOCKERY_VERSION="${MOCKERY_VERSION:-v2.53.4}"
+          case "$(uname -m)" in
+            x86_64)  MOCKERY_ARCH=x86_64 ;;
+            aarch64) MOCKERY_ARCH=arm64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          curl -fsSL \
+            "https://github.com/vektra/mockery/releases/download/${MOCKERY_VERSION}/mockery_${MOCKERY_VERSION#v}_Linux_${MOCKERY_ARCH}.tar.gz" \
+            | tar -xz -C /usr/local/bin mockery
+          mockery --version
 
       - name: go vet
         run: go vet ./...
