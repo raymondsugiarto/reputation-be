@@ -37,6 +37,8 @@ env:
 
 jobs:
   build-and-push:
+    if: >
+      github.event.workflow_run.conclusion == 'success'
     name: Build & push image
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -186,3 +188,45 @@ jobs:
             fi
             echo "- Tags applied: \`${{ steps.meta.outputs.tags_list || '(none)' }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+  deploy:
+    needs: build-and-push
+    if: |
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate Portainer
+        id: auth
+        run: |
+          TOKEN=$(
+            curl -sk \
+            -X POST \
+            "${{ secrets.PORTAINER_URL }}/api/auth" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "username":"${{ secrets.PORTAINER_USERNAME }}",
+              "password":"${{ secrets.PORTAINER_PASSWORD }}"
+            }' | jq -r '.jwt'
+          )
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+      - name: Read compose
+        id: compose
+        run: |
+          CONTENT=$(jq -Rs . docker-compose.yml)
+          echo "compose=$CONTENT" >> "$GITHUB_OUTPUT"
+      - name: Redeploy
+        run: |
+          curl -sk \
+            -X PUT \
+            "${{ secrets.PORTAINER_URL }}/api/stacks/${{ secrets.PORTAINER_STACK_ID }}?endpointId=${{ secrets.PORTAINER_ENDPOINT_ID }}" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"StackFileContent\": ${{ steps.compose.outputs.compose }},
+              \"Env\": [],
+              \"Prune\": false,
+              \"PullImage\": true,
+              \"RepullImageAndRedeploy\": true
+            }"

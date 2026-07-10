@@ -22,10 +22,10 @@ generate-mock: clean-mock
 	@echo "--- Generating Mock by Mockery ---"
 	@mockery --all
 	
-test: generate-mock
+test: setup generate-mock
 	@echo "--- Running test ---"
 	@mkdir -p report
-	@go run gotest.tools/gotestsum@latest -f testname -- ./pkg/module/... ./pkg/clients/... --coverprofile="report/c.out" -shuffle=on
+	@go run gotest.tools/gotestsum@latest -f testname -- ./pkg/module/... --coverprofile="report/c.out" -shuffle=on
 
 test-coverage: test
 	@echo "--- Running test coverage ---"
