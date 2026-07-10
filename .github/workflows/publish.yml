@@ -201,53 +201,101 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Expose Portainer secrets as real bash env vars so step scripts can
+    # reference them by name (e.g. `$PORTAINER_URL`) instead of inlining
+    # `${{ secrets.* }}` everywhere — which also helps the secret
+    # validation logic below (`[ -z "$PORTAINER_URL" ]`) work directly.
+    env:
+      PORTAINER_URL: ${{ secrets.PORTAINER_URL }}
+      PORTAINER_USERNAME: ${{ secrets.PORTAINER_USERNAME }}
+      PORTAINER_PASSWORD: ${{ secrets.PORTAINER_PASSWORD }}
+      PORTAINER_STACK_ID: ${{ secrets.PORTAINER_STACK_ID }}
+      PORTAINER_ENDPOINT_ID: ${{ secrets.PORTAINER_ENDPOINT_ID }}
     steps:
       - uses: actions/checkout@v4
       - name: Authenticate Portainer
         id: auth
         run: |
-          # Build the login payload as a real JSON object via jq so we never
-          # have to hand-quote JSON through bash. The previous version
-          # inlined the body in a single-quoted bash string and *that* is
-          # fine, but we keep it symmetric with Redeploy for readability.
+          # Validate secrets up front so a misconfiguration fails with a
+          # clear `::error::` instead of producing a confusing 4xx from
+          # Portainer (or worse, an empty Authorization header).
+          for v in PORTAINER_URL PORTAINER_USERNAME PORTAINER_PASSWORD; do
+            if [ -z "${!v}" ]; then
+              echo "::error::secret '$v' is empty or undefined"
+              exit 1
+            fi
+          done
+
+          # Build the login payload as a real JSON object via jq so we
+          # never have to hand-quote JSON through bash. `--arg` is safe
+          # for arbitrary input: it stores the value verbatim, escaping
+          # is handled by jq on serialisation.
           jq -n \
-            --arg u "${{ secrets.PORTAINER_USERNAME }}" \
-            --arg p "${{ secrets.PORTAINER_PASSWORD }}" \
+            --arg u "$PORTAINER_USERNAME" \
+            --arg p "$PORTAINER_PASSWORD" \
             '{username: $u, password: $p}' > /tmp/portainer-auth.json
-          TOKEN=$(curl -sk \
+          # Use --fail-with-body so HTTP 4xx/5xx still print the response
+          # body to stderr before exiting non-zero.
+          HTTP_RESPONSE=$(curl -sk -w '\n%{http_code}' \
             -X POST \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/portainer-auth.json \
-            "${{ secrets.PORTAINER_URL }}/api/auth" | jq -r '.jwt')
+            "$PORTAINER_URL/api/auth")
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
           rm -f /tmp/portainer-auth.json
-          # Fail loudly if we got an empty token (Portainer usually returns
-          # 4xx with a JSON error body; jq -r '.jwt' then returns "null").
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "::error::failed to obtain Portainer JWT (empty response)"
+          TOKEN=$(echo "$HTTP_BODY" | jq -r '.jwt // empty')
+          if [ "$HTTP_CODE" != "200" ] || [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+            echo "::error::Portainer auth failed (HTTP $HTTP_CODE): $HTTP_BODY"
             exit 1
           fi
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
       - name: Read compose
         id: compose
         run: |
-          # JSON-encode docker-compose.yml so subsequent steps can drop it
-          # verbatim into a JSON request body. Stored as a $GITHUB_OUTPUT
-          # *value* (not a path) so the Redeploy step can jq-slurp it
-          # without a second file read.
-          CONTENT=$(jq -Rs . docker-compose.yml)
-          echo "compose=$CONTENT" >> "$GITHUB_OUTPUT"
+          # Sanity-check that docker-compose.yml exists in the checkout.
+          # The deploy job ran `actions/checkout@v4`, so this should
+          # always be present, but a missing file would otherwise fail
+          # later with a less helpful "jq: 1 compile error".
+          if [ ! -f docker-compose.yml ]; then
+            echo "::error::docker-compose.yml not found at repo root"
+            exit 1
+          fi
+          # Pass the raw compose content as a $GITHUB_OUTPUT value.
+          # Do NOT pre-JSON-encode it: GitHub Actions substitutes the
+          # value into bash source where the embedded backslash-quote
+          # sequences (`\"`) would be unescaped to `"` by bash, breaking
+          # the surrounding `--arg compose "…"` argument. Leaving it raw
+          # lets `--arg` carry it safely across the bash/jq boundary.
+          CONTENT=$(cat docker-compose.yml)
+          {
+            # $GITHUB_OUTPUT is itself a multi-line key=value file; the
+            # heredoc preserves the compose content byte-for-byte.
+            echo "compose<<EOF"
+            echo "$CONTENT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: Redeploy
         run: |
-          # Build the redeploy payload as a real JSON file via jq — never
-          # embed JSON inside a bash double-quoted string. The previous
-          # version did exactly that and the embedded `\"` escapes from
-          # the YAML block scalar made curl see stray tokens like `-:`,
-          # producing `curl: option -: is unknown`. Stdin via
-          # `--data-binary @-` keeps the body byte-for-byte intact.
-          #
-          # inputs.ref defaults to the compose value written by the
-          # `Read compose` step; --arg keeps it on the jq side rather than
-          # splicing raw text into a JSON literal.
+          # Validate the stack-id / endpoint-id secrets up front. A
+          # missing PORTAINER_STACK_ID previously produced a request URL
+          # like `/api/stacks/?endpointId=…`, which Portainer answers
+          # with a generic 4xx and no hint about which secret is wrong.
+          if [ -z "$PORTAINER_STACK_ID" ]; then
+            echo "::error::secret 'PORTAINER_STACK_ID' is empty or undefined"
+            exit 1
+          fi
+          if [ -z "$PORTAINER_ENDPOINT_ID" ]; then
+            echo "::error::secret 'PORTAINER_ENDPOINT_ID' is empty or undefined"
+            exit 1
+          fi
+
+          # `${{ steps.compose.outputs.compose }}` here resolves to the
+          # raw docker-compose.yml content (see Read compose above).
+          # `--arg compose` keeps it on the jq side without re-parsing;
+          # `($compose | tojson)` is unnecessary because $compose is
+          # already a string and jq JSON-encodes it automatically when
+          # the output filter renders the surrounding object.
           jq -n \
             --arg compose    "${{ steps.compose.outputs.compose }}" \
             --argjson prune   false \
@@ -255,16 +303,14 @@ jobs:
             --argjson repull  true \
             --argjson env     [] \
             '{
-              StackFileContent:        ($compose | fromjson),
+              StackFileContent:        $compose,
               Env:                     $env,
               Prune:                   $prune,
               PullImage:               $pull,
               RepullImageAndRedeploy:   $repull
             }' > /tmp/portainer-redeploy.json
 
-          # Sanity check before hitting the API: body must be a non-empty
-          # JSON object. If `fromjson` fails (because Read compose wrote
-          # something malformed), jq will already have exited non-zero.
+          # Sanity check before hitting the API.
           test -s /tmp/portainer-redeploy.json
 
           # `set -x` would leak the JWT and the entire stack body into the
@@ -273,7 +319,7 @@ jobs:
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/portainer-redeploy.json \
-            "${{ secrets.PORTAINER_URL }}/api/stacks/${{ secrets.PORTAINER_STACK_ID }}?endpointId=${{ secrets.PORTAINER_ENDPOINT_ID }}"
+            "${{ secrets.PORTAINER_URL }}/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_ENDPOINT_ID"
           # curl already exited non-zero on HTTP >=400, but Portainer can
           # return 200 with an error envelope. We don't parse it here
           # (kept simple); the next deploy will surface any drift.
