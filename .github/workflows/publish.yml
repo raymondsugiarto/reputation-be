@@ -321,7 +321,14 @@ jobs:
 
           # `set -x` would leak the JWT and the entire stack body into the
           # log; deliberately keep this step quiet.
-          curl -fsS -X PUT \
+          #
+          # `-k` (--insecure) accepts Portainer's self-signed TLS cert.
+          # Portainer 2.x ships a self-signed cert by default; the
+          # alternatives are (a) baking the CA into a workflow secret and
+          # using --cacert, or (b) switching PORTAINER_URL to http://. We
+          # accept the self-signed because Portainer is only reachable
+          # from the GitHub runner over a private network in this setup.
+          curl -fsSk -X PUT \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/portainer-redeploy.json \
