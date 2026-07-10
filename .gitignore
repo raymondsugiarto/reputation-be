@@ -30,3 +30,10 @@ storage
 
 graphify-out/cost.json        # local only
 graphify-out/cache/         # optional: commit for speed, skip to keep repo small
+
+# mockery v2 writes generated mocks here by default when invoked with
+# `mockery --all` and no .mockery.yaml. CI runs the generator on every
+# push; the artefacts are reproducible from `make generate-mock`, so we
+# keep them out of git. Add mocks/ here, not just pkg/infrastructure/*,
+# to cover both the v2 default layout and any future per-package layout.
+mocks/
