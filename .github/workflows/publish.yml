@@ -37,8 +37,14 @@ env:
 
 jobs:
   build-and-push:
-    if: >
-      github.event.workflow_run.conclusion == 'success'
+    # No `if:` guard here. The previous guard
+    # `github.event.workflow_run.conclusion == 'success'` was a leftover
+    # from a `workflow_run`-trigger template and is **always false** on a
+    # plain `push` event (where `github.event.workflow_run` is null).
+    # That made the job skip on every push to main, and consequently the
+    # `deploy` job downstream was also skipped (because it `needs:
+    # build-and-push`). The 0-second, grey-circle runs in the Actions
+    # UI were the visible symptom.
     name: Build & push image
     runs-on: ubuntu-latest
     timeout-minutes: 30
