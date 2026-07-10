@@ -49,12 +49,18 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          # Pin to the same major.minor declared in `go.mod` so downloads
-          # are deterministic.
-          go-version: "1.25.9"
-          # `internal` cache + `true` for dependency cache per project caching
-          # guidance.
+          # Pin to a real release that is present on the actions/go-versions
+          # mirror. Keep this in lock-step with `toolchain` in `go.mod` so
+          # both the install path and the auto-bootstrap path agree.
+          # Latest verified on the mirror at the time of writing: 1.25.12.
+          go-version: "1.25.12"
+          # Cache the module download cache (and build cache) keyed on
+          # go.sum so caching actually engages; without this hint
+          # setup-go sometimes falls back to the runner's pre-installed
+          # Go (ubuntu-latest ships 1.24), which then fails the next
+          # `go install` with "package requires newer Go version go1.25".
           cache: true
+          cache-dependency-path: go.sum
 
       - name: Install test dependencies
         # The Makefile already pulls in gotestsum on demand, but installing
@@ -71,7 +77,9 @@ jobs:
         # tarball ships a pre-built binary that has no such dependency.
         # See release listing: https://github.com/vektra/mockery/releases
         run: |
-          go install gotest.tools/gotestsum@latest
+          # Pin gotestsum instead of `@latest` so a future release doesn't
+          # silently bump the go directive requirement beyond what we test.
+          go install gotest.tools/gotestsum@v1.13.0
           # mockery ships release tarballs named `_Linux_x86_64.tar.gz` /
           # `_Linux_arm64.tar.gz` (note: not `amd64`). Translate `uname -m`
           # output to the matching asset suffix.

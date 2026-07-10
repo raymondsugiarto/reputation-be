@@ -2,6 +2,8 @@ module github.com/raymondsugiarto/reputation-be
 
 go 1.25.0
 
+toolchain go1.25.12
+
 require (
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/gofiber/contrib/v3/jwt v1.1.6
