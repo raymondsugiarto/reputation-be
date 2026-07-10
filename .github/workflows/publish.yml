@@ -328,12 +328,37 @@ jobs:
           # using --cacert, or (b) switching PORTAINER_URL to http://. We
           # accept the self-signed because Portainer is only reachable
           # from the GitHub runner over a private network in this setup.
-          curl -fsSk -X PUT \
+          #
+          # We deliberately omit curl's `-f` flag so that on HTTP >=400
+          # the response body is printed to the log instead of being
+          # silently suppressed. Portainer returns a JSON error envelope
+          # (e.g. {"details":"..."}) and that envelope is the only way
+          # to tell *why* a request was rejected — 403 in particular can
+          # mean RBAC, missing endpoint access, resource control, or a
+          # wrong stack-id. Capture the body, exit non-zero if the
+          # status code isn't in the 2xx range, and surface the body to
+          # the GitHub log so the failure is self-diagnosing.
+          HTTP_RESPONSE=$(curl -sk -w '\n%{http_code}' \
+            -X PUT \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
             --data-binary @/tmp/portainer-redeploy.json \
-            "${{ secrets.PORTAINER_URL }}/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_ENDPOINT_ID"
-          # curl already exited non-zero on HTTP >=400, but Portainer can
-          # return 200 with an error envelope. We don't parse it here
-          # (kept simple); the next deploy will surface any drift.
+            "${{ secrets.PORTAINER_URL }}/api/stacks/$PORTAINER_STACK_ID?endpointId=$PORTAINER_ENDPOINT_ID")
+          HTTP_CODE=$(echo "$HTTP_RESPONSE" | tail -1)
+          HTTP_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+          if [ "${HTTP_CODE:0:1}" != "2" ]; then
+            echo "::error::Portainer redeploy failed (HTTP $HTTP_CODE)"
+            echo "::error::response body: $HTTP_BODY"
+            # RBAC and endpoint-access issues are configuration problems
+            # that the workflow can't fix on its own; surface a few of
+            # the most likely causes so the operator doesn't have to
+            # dig into Portainer logs.
+            case "$HTTP_CODE" in
+              401) echo "::error::401 means the JWT expired or was rejected; check PORTAINER_USERNAME/PORTAINER_PASSWORD." ;;
+              403) echo "::error::403 means the auth user lacks permission to update this stack. Either grant 'Stack management' to the user in Portainer, or use an admin account." ;;
+              404) echo "::error::404 means PORTAINER_STACK_ID or PORTAINER_ENDPOINT_ID does not exist on this Portainer instance." ;;
+              409) echo "::error::409 means Portainer rejected the stack update (check that docker-compose.yml parses as a valid stack on the endpoint)." ;;
+            esac
+            exit 1
+          fi
           rm -f /tmp/portainer-redeploy.json
