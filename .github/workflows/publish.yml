@@ -261,20 +261,18 @@ jobs:
             echo "::error::docker-compose.yml not found at repo root"
             exit 1
           fi
-          # Pass the raw compose content as a $GITHUB_OUTPUT value.
-          # Do NOT pre-JSON-encode it: GitHub Actions substitutes the
-          # value into bash source where the embedded backslash-quote
-          # sequences (`\"`) would be unescaped to `"` by bash, breaking
-          # the surrounding `--arg compose "…"` argument. Leaving it raw
-          # lets `--arg` carry it safely across the bash/jq boundary.
-          CONTENT=$(cat docker-compose.yml)
-          {
-            # $GITHUB_OUTPUT is itself a multi-line key=value file; the
-            # heredoc preserves the compose content byte-for-byte.
-            echo "compose<<EOF"
-            echo "$CONTENT"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          # Copy the raw compose file to a path outside the workspace.
+          # We pass the *path* between steps (via $GITHUB_OUTPUT) rather
+          # than the file's content — that way the docker-compose.yml
+          # text never has to cross a bash/jq/GitHub-Actions expression
+          # boundary, which is the only reliable way to handle content
+          # that may contain quotes, newlines, $, backticks, etc.
+          #
+          # $RUNNER_TEMP is cleaned up automatically at job end, so we
+          # don't leak files between runs.
+          cp docker-compose.yml "$RUNNER_TEMP/portainer-compose.yml"
+          # $GITHUB_OUTPUT accepts `key=value` lines, one per output.
+          echo "compose_path=$RUNNER_TEMP/portainer-compose.yml" >> "$GITHUB_OUTPUT"
       - name: Redeploy
         run: |
           # Validate the stack-id / endpoint-id secrets up front. A
@@ -290,14 +288,22 @@ jobs:
             exit 1
           fi
 
-          # `${{ steps.compose.outputs.compose }}` here resolves to the
-          # raw docker-compose.yml content (see Read compose above).
-          # `--arg compose` keeps it on the jq side without re-parsing;
-          # `($compose | tojson)` is unnecessary because $compose is
-          # already a string and jq JSON-encodes it automatically when
-          # the output filter renders the surrounding object.
+          # Resolve the compose file path. ${{ steps.compose.outputs.compose_path }}
+          # is a short string (no newlines, no quotes) so direct bash
+          # interpolation is safe.
+          COMPOSE_PATH="${{ steps.compose.outputs.compose_path }}"
+          if [ ! -f "$COMPOSE_PATH" ]; then
+            echo "::error::compose file not found at $COMPOSE_PATH"
+            exit 1
+          fi
+
+          # `--rawfile compose PATH` reads the file as a single string
+          # on the jq side. The docker-compose.yml content never has to
+          # cross bash as text, so its quotes / newlines / $ / backticks
+          # are harmless. (`--slurpfile` would also slurp the file but
+          # parses it as JSON, which docker-compose.yml is not.)
           jq -n \
-            --arg compose    "${{ steps.compose.outputs.compose }}" \
+            --rawfile compose "$COMPOSE_PATH" \
             --argjson prune   false \
             --argjson pull    true \
             --argjson repull  true \
