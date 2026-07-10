@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  reputation-api:
+    image: ghcr.io/raymondsugiarto/reputation-be:latest
+    container_name: reputation-api
+    hostname: reputation-api
+
+    restart: unless-stopped
+
+    ports:
+      - "9777:3000"
+
+    env_file:
+      - stack.env
+
+    networks:
+      - nginx_default
+
+networks:
+  nginx_default:
+    external: true
